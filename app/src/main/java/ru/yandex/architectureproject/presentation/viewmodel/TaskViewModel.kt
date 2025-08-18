@@ -3,6 +3,7 @@ package ru.yandex.architectureproject.presentation.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,12 +31,29 @@ class TaskViewModel(
     private val _state = MutableStateFlow<TaskState>(TaskState.Loading)
     val state: StateFlow<TaskState> = _state.asStateFlow()
 
+    private val mutableMap: MutableMap<Int, Job> = mutableMapOf()
+
     init {
-        reduce(TaskAction.LoadTasks)
+        reduce(TaskAction.LoadTask)
     }
 
     fun reduce(action: TaskAction) {
-        // TODO: Здесь должна быть обработка действий
+        viewModelScope.launch {
+            when (action) {
+                TaskAction.LoadTask -> loadTasks()
+
+                is TaskAction.AddTask -> addTaskUseCase(action.task)
+
+                is TaskAction.DeleteTask -> deleteTaskUseCase(action.taskId)
+
+                is TaskAction.UpdateTaskStatus ->
+                    if (action.isComplete) {
+                        completedTask(action.taskId)
+                    } else {
+                        incompleteTask(action.taskId)
+                    }
+            }
+        }
     }
 
     private suspend fun loadTasks() {
@@ -45,6 +63,24 @@ class TaskViewModel(
                 .onStart { _state.value = TaskState.Loading }
                 .catch { e -> _state.value = TaskState.Error(e.message ?: "Ошибка загрузки") }
                 .collect { tasks -> _state.value = TaskState.Loaded(tasks) }
+        }
+    }
+
+    private suspend fun incompleteTask(taskId: Int) {
+        mutableMap[taskId]?.cancel()
+        withContext(ioDispatcher) {
+            incompleteTaskUseCase(taskId)
+        }
+    }
+
+    private suspend fun completedTask(taskId: Int) {
+        withContext(ioDispatcher) {
+            val job = launch {
+                completeTaskUseCase(taskId)
+            }
+
+            mutableMap.put(taskId, job)
+            job.join()
         }
     }
 }
