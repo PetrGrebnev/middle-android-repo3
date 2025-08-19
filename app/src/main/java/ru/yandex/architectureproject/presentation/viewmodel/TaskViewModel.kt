@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,6 +20,7 @@ import ru.yandex.architectureproject.domain.GetAllTasksUseCase
 import ru.yandex.architectureproject.domain.IncompleteTaskUseCase
 import ru.yandex.architectureproject.presentation.state.TaskAction
 import ru.yandex.architectureproject.presentation.state.TaskState
+import java.util.concurrent.ConcurrentHashMap
 
 class TaskViewModel(
     private val addTaskUseCase: AddTaskUseCase,
@@ -31,7 +33,7 @@ class TaskViewModel(
     private val _state = MutableStateFlow<TaskState>(TaskState.Loading)
     val state: StateFlow<TaskState> = _state.asStateFlow()
 
-    private val mutableMap: MutableMap<Int, Job> = mutableMapOf()
+    private val taskComplete: ConcurrentHashMap<Int, Job> = ConcurrentHashMap()
 
     init {
         reduce(TaskAction.LoadTask)
@@ -67,7 +69,8 @@ class TaskViewModel(
     }
 
     private suspend fun incompleteTask(taskId: Int) {
-        mutableMap[taskId]?.cancel()
+        taskComplete[taskId]?.cancel()
+        taskComplete.remove(taskId)
         withContext(ioDispatcher) {
             incompleteTaskUseCase(taskId)
         }
@@ -75,12 +78,18 @@ class TaskViewModel(
 
     private suspend fun completedTask(taskId: Int) {
         withContext(ioDispatcher) {
-            val job = launch {
-                completeTaskUseCase(taskId)
+            val job = taskComplete.getOrPut(
+                taskId
+            ) {
+                launch {
+                    completeTaskUseCase(taskId)
+                }
             }
 
-            mutableMap.put(taskId, job)
             job.join()
+            taskComplete[taskId]?.let {
+                if (it.isCompleted) taskComplete.remove(taskId)
+            }
         }
     }
 }
