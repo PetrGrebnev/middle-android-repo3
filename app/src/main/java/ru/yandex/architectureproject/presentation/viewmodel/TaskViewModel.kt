@@ -3,6 +3,8 @@ package ru.yandex.architectureproject.presentation.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,6 +20,7 @@ import ru.yandex.architectureproject.domain.GetAllTasksUseCase
 import ru.yandex.architectureproject.domain.IncompleteTaskUseCase
 import ru.yandex.architectureproject.presentation.state.TaskAction
 import ru.yandex.architectureproject.presentation.state.TaskState
+import java.util.concurrent.ConcurrentHashMap
 
 class TaskViewModel(
     private val addTaskUseCase: AddTaskUseCase,
@@ -30,12 +33,29 @@ class TaskViewModel(
     private val _state = MutableStateFlow<TaskState>(TaskState.Loading)
     val state: StateFlow<TaskState> = _state.asStateFlow()
 
+    private val taskComplete: ConcurrentHashMap<Int, Job> = ConcurrentHashMap()
+
     init {
-        reduce(TaskAction.LoadTasks)
+        reduce(TaskAction.LoadTask)
     }
 
     fun reduce(action: TaskAction) {
-        // TODO: Здесь должна быть обработка действий
+        viewModelScope.launch {
+            when (action) {
+                TaskAction.LoadTask -> loadTasks()
+
+                is TaskAction.AddTask -> addTaskUseCase(action.task)
+
+                is TaskAction.DeleteTask -> deleteTaskUseCase(action.taskId)
+
+                is TaskAction.UpdateTaskStatus ->
+                    if (action.isComplete) {
+                        completedTask(action.taskId)
+                    } else {
+                        incompleteTask(action.taskId)
+                    }
+            }
+        }
     }
 
     private suspend fun loadTasks() {
@@ -45,6 +65,31 @@ class TaskViewModel(
                 .onStart { _state.value = TaskState.Loading }
                 .catch { e -> _state.value = TaskState.Error(e.message ?: "Ошибка загрузки") }
                 .collect { tasks -> _state.value = TaskState.Loaded(tasks) }
+        }
+    }
+
+    private suspend fun incompleteTask(taskId: Int) {
+        taskComplete[taskId]?.cancel()
+        taskComplete.remove(taskId)
+        withContext(ioDispatcher) {
+            incompleteTaskUseCase(taskId)
+        }
+    }
+
+    private suspend fun completedTask(taskId: Int) {
+        withContext(ioDispatcher) {
+            val job = taskComplete.getOrPut(
+                taskId
+            ) {
+                launch {
+                    completeTaskUseCase(taskId)
+                }
+            }
+
+            job.join()
+            taskComplete[taskId]?.let {
+                if (it.isCompleted) taskComplete.remove(taskId)
+            }
         }
     }
 }
